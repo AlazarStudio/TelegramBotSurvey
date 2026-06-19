@@ -468,11 +468,14 @@ async def _promote_admin(new_id: int, adder_id: int) -> str:
     )
 
 
-async def _finish_add_admin(message: Message, state: FSMContext, result: str) -> None:
+async def _exit_add_admin(message: Message, state: FSMContext, result: str) -> None:
     await state.clear()
-    await message.answer(result, reply_markup=main_menu_keyboard(True, False))
-    text, markup = await _admins_view()
-    await message.answer(text, reply_markup=markup)
+    # request_users-клавиатуру часть клиентов не заменяет обычной reply-кнопкой,
+    # поэтому сначала явно убираем её, затем возвращаем постоянное меню админа.
+    await message.answer(result, reply_markup=ReplyKeyboardRemove())
+    await message.answer(
+        "👑 Меню админа ниже 👇", reply_markup=main_menu_keyboard(True, False)
+    )
 
 
 @router.callback_query(F.data == "adm:admin_add")
@@ -497,12 +500,12 @@ async def admin_add_shared(message: Message, state: FSMContext) -> None:
         shared.user_ids or []
     )
     if not ids:
-        await _finish_add_admin(
+        await _exit_add_admin(
             message, state, "⚠️ Не удалось получить пользователя — попробуйте ещё раз."
         )
         return
     result = await _promote_admin(ids[0], message.from_user.id)
-    await _finish_add_admin(message, state, result)
+    await _exit_add_admin(message, state, result)
 
 
 @router.message(AdminStates.waiting_admin_id, F.text)
@@ -510,8 +513,7 @@ async def admin_add_id(message: Message, state: FSMContext) -> None:
     value = (message.text or "").strip()
 
     if value in ("/cancel", ADD_ADMIN_CANCEL):
-        await state.clear()
-        await message.answer("Отменено.", reply_markup=main_menu_keyboard(True, False))
+        await _exit_add_admin(message, state, "Отменено.")
         return
 
     if not value.isdigit():
@@ -522,7 +524,7 @@ async def admin_add_id(message: Message, state: FSMContext) -> None:
         return
 
     result = await _promote_admin(int(value), message.from_user.id)
-    await _finish_add_admin(message, state, result)
+    await _exit_add_admin(message, state, result)
 
 
 @router.callback_query(F.data.startswith("adm:admin_del:"))
