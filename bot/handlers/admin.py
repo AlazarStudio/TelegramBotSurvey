@@ -493,9 +493,14 @@ async def admin_add_prompt(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.message(AdminStates.waiting_admin_id, F.users_shared)
+# Пикер и «Отмена» — БЕЗ фильтра по состоянию: клавиатура пикера остаётся у
+# клиента даже после рестарта бота (когда in-memory состояние уже стёрто), и
+# нажатия должны срабатывать всё равно. request_id ограничивает пикер нашим.
+@router.message(F.users_shared)
 async def admin_add_shared(message: Message, state: FSMContext) -> None:
     shared = message.users_shared
+    if shared.request_id != ADD_ADMIN_REQUEST_ID:
+        return
     ids = [u.user_id for u in shared.users] if shared.users else list(
         shared.user_ids or []
     )
@@ -508,11 +513,16 @@ async def admin_add_shared(message: Message, state: FSMContext) -> None:
     await _exit_add_admin(message, state, result)
 
 
+@router.message(F.text == ADD_ADMIN_CANCEL)
+async def admin_add_cancel(message: Message, state: FSMContext) -> None:
+    await _exit_add_admin(message, state, "Отменено.")
+
+
 @router.message(AdminStates.waiting_admin_id, F.text)
 async def admin_add_id(message: Message, state: FSMContext) -> None:
     value = (message.text or "").strip()
 
-    if value in ("/cancel", ADD_ADMIN_CANCEL):
+    if value == "/cancel":
         await _exit_add_admin(message, state, "Отменено.")
         return
 
