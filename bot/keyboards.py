@@ -16,7 +16,7 @@ BTN_WINNER = "🎲 Выбрать победителя"
 BTN_EXPORT = "📊 Выгрузить в Excel"
 BTN_MYTESTS = "🧪 Мои тестовые прохождения"
 BTN_ADMINS = "👑 Суперадмины"
-BTN_WIPE = "🗑 Удалить весь опрос"
+BTN_WIPE = "🗑 Удалить результаты опроса"
 BTN_BACK = "⬅️ Назад"
 
 
@@ -30,10 +30,10 @@ def main_menu_keyboard(is_admin: bool, done: bool) -> ReplyKeyboardMarkup:
                 KeyboardButton(text=BTN_ADMINS),
             ],
             [
-                KeyboardButton(text=BTN_EXPORT),
+                KeyboardButton(text=BTN_WIPE),
                 KeyboardButton(text=BTN_MYTESTS),
             ],
-            [KeyboardButton(text=BTN_WIPE)],
+            [KeyboardButton(text=BTN_EXPORT)],
             [KeyboardButton(text=BTN_WINNER)],
         ]
     elif done:

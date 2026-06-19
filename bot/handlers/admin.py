@@ -570,9 +570,9 @@ async def wipe_prompt(message: Message, state: FSMContext) -> None:
         return
     await state.set_state(AdminStates.waiting_wipe_password)
     await message.answer(
-        "🗑 <b>Удаление всего опроса</b>\n\n"
+        "🗑 <b>Удаление результатов опроса</b>\n\n"
         "Будут <b>безвозвратно</b> удалены все результаты, ответы и участники "
-        "(их номерки освободятся). Вопросы и направления останутся.\n\n"
+        "(их номерки освободятся). Сам опрос — вопросы и направления — останется.\n\n"
         "Чтобы подтвердить — введите <b>пароль</b>.\n"
         "Для отмены отправьте /cancel.",
         reply_markup=ReplyKeyboardRemove(),
@@ -604,7 +604,7 @@ async def wipe_confirm(message: Message, state: FSMContext) -> None:
         await session.commit()
 
     await message.answer(
-        "✅ Опрос полностью очищен: результаты и участники удалены, "
-        "номерки освобождены.",
+        "✅ Результаты опроса удалены: участники и ответы стёрты, "
+        "номерки освобождены. Сам опрос остался на месте.",
         reply_markup=admin_kb,
     )
