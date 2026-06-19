@@ -8,3 +8,4 @@ class SurveyStates(StatesGroup):
 
 class AdminStates(StatesGroup):
     waiting_wipe_password = State()
+    waiting_admin_id = State()

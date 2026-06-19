@@ -28,6 +28,7 @@ from bot import config
 from bot.database import get_session
 from bot.export import build_results_xlsx
 from bot.keyboards import (
+    BTN_ADMINS,
     BTN_EXPORT,
     BTN_MYTESTS,
     BTN_PARTICIPANTS,
@@ -39,6 +40,7 @@ from bot.models import (
     Participation,
     ParticipationAnswer,
     Respondent,
+    SuperAdmin,
 )
 from bot.permissions import is_superadmin
 from bot.states import AdminStates
@@ -382,6 +384,120 @@ async def my_tests_delall(callback: CallbackQuery) -> None:
         await session.commit()
     await callback.answer("Удалено.")
     text, markup = await _mytests_view(callback.from_user.id)
+    await safe_edit(callback, text, markup)
+
+
+# ----------------------------- суперадмины -----------------------------
+
+async def _admins_view() -> tuple[str, InlineKeyboardMarkup]:
+    async with get_session() as session:
+        rows = list(
+            await session.scalars(
+                select(SuperAdmin).order_by(SuperAdmin.added_at)
+            )
+        )
+
+    text = (
+        "👑 <b>Суперадмины</b>\n\n"
+        "Им доступны все админ-разделы. Чтобы добавить — нажмите кнопку ниже и "
+        "пришлите Telegram ID (узнать можно у @userinfobot).\n\n"
+        "🔒 Главный суперадмин из настроек сервера (.env) не удаляется отсюда.\n\n"
+        "<b>Список:</b>"
+    )
+    kb = InlineKeyboardBuilder()
+    sizes = []
+    for sa in rows:
+        is_root = sa.telegram_id == config.SUPERADMIN_ID
+        mark = " 🔒" if is_root else ""
+        text += f"\n  • <code>{sa.telegram_id}</code>{mark}"
+        if not is_root:
+            kb.button(
+                text=f"🗑 Удалить {sa.telegram_id}",
+                callback_data=f"adm:admin_del:{sa.telegram_id}",
+            )
+            sizes.append(1)
+    kb.button(text="➕ Добавить суперадмина", callback_data="adm:admin_add")
+    sizes.append(1)
+    kb.adjust(*sizes)
+    return text, kb.as_markup()
+
+
+@router.message(StateFilter(None), F.text == BTN_ADMINS)
+async def admins_entry(message: Message) -> None:
+    text, markup = await _admins_view()
+    await message.answer(text, reply_markup=markup)
+
+
+@router.callback_query(F.data == "adm:admin_add")
+async def admin_add_prompt(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AdminStates.waiting_admin_id)
+    await callback.message.answer(
+        "➕ <b>Добавление суперадмина</b>\n\n"
+        "Пришлите <b>Telegram ID</b> пользователя (только цифры). "
+        "Узнать ID можно у @userinfobot.\n\n"
+        "Для отмены отправьте /cancel.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_admin_id, F.text)
+async def admin_add_id(message: Message, state: FSMContext) -> None:
+    value = (message.text or "").strip()
+    admin_kb = main_menu_keyboard(True, False)
+
+    if value == "/cancel":
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=admin_kb)
+        return
+
+    if not value.isdigit():
+        await message.answer(
+            "🤔 ID состоит только из цифр. Пришлите числовой Telegram ID "
+            "или отправьте /cancel."
+        )
+        return
+
+    new_id = int(value)
+    async with get_session() as session:
+        if await session.get(SuperAdmin, new_id) is not None:
+            await state.clear()
+            await message.answer(
+                f"ℹ️ Пользователь <code>{new_id}</code> уже суперадмин.",
+                reply_markup=admin_kb,
+            )
+            return
+        session.add(SuperAdmin(telegram_id=new_id, added_by=message.from_user.id))
+        await session.commit()
+
+    await state.clear()
+    await message.answer(
+        f"✅ Пользователь <code>{new_id}</code> добавлен в суперадмины.\n\n"
+        "Ему нужно нажать /start, чтобы увидеть админское меню.",
+        reply_markup=admin_kb,
+    )
+    text, markup = await _admins_view()
+    await message.answer(text, reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("adm:admin_del:"))
+async def admin_delete(callback: CallbackQuery) -> None:
+    target = int(callback.data.split(":")[2])
+    if target == config.SUPERADMIN_ID:
+        await callback.answer(
+            "🔒 Это главный суперадмин из .env — его нельзя удалить отсюда.",
+            show_alert=True,
+        )
+        return
+    async with get_session() as session:
+        sa = await session.get(SuperAdmin, target)
+        if sa is not None:
+            await session.delete(sa)
+            await session.commit()
+            await callback.answer("Суперадмин удалён.")
+        else:
+            await callback.answer("Уже удалён.")
+    text, markup = await _admins_view()
     await safe_edit(callback, text, markup)
 
 
