@@ -17,7 +17,10 @@ from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
     InlineKeyboardMarkup,
+    KeyboardButton,
+    KeyboardButtonRequestUsers,
     Message,
+    ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -428,56 +431,98 @@ async def admins_entry(message: Message) -> None:
     await message.answer(text, reply_markup=markup)
 
 
+ADD_ADMIN_REQUEST_ID = 1
+ADD_ADMIN_CANCEL = "⬅️ Отмена"
+
+
+def _add_admin_keyboard() -> ReplyKeyboardMarkup:
+    """Reply-клавиатура шага добавления: нативный пикер + отмена."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(
+                    text="📇 Выбрать из контактов",
+                    request_users=KeyboardButtonRequestUsers(
+                        request_id=ADD_ADMIN_REQUEST_ID,
+                        max_quantity=1,
+                    ),
+                )
+            ],
+            [KeyboardButton(text=ADD_ADMIN_CANCEL)],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Введите ID или выберите контакт",
+    )
+
+
+async def _promote_admin(new_id: int, adder_id: int) -> str:
+    """Добавляет суперадмина (идемпотентно), возвращает текст-итог для админа."""
+    async with get_session() as session:
+        if await session.get(SuperAdmin, new_id) is not None:
+            return f"ℹ️ Пользователь <code>{new_id}</code> уже суперадмин."
+        session.add(SuperAdmin(telegram_id=new_id, added_by=adder_id))
+        await session.commit()
+    return (
+        f"✅ Пользователь <code>{new_id}</code> добавлен в суперадмины.\n\n"
+        "Ему нужно нажать /start, чтобы увидеть админское меню."
+    )
+
+
+async def _finish_add_admin(message: Message, state: FSMContext, result: str) -> None:
+    await state.clear()
+    await message.answer(result, reply_markup=main_menu_keyboard(True, False))
+    text, markup = await _admins_view()
+    await message.answer(text, reply_markup=markup)
+
+
 @router.callback_query(F.data == "adm:admin_add")
 async def admin_add_prompt(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_admin_id)
     await callback.message.answer(
         "➕ <b>Добавление суперадмина</b>\n\n"
-        "Пришлите <b>Telegram ID</b> пользователя (только цифры). "
-        "Узнать ID можно у @userinfobot.\n\n"
-        "Для отмены отправьте /cancel.",
-        reply_markup=ReplyKeyboardRemove(),
+        "Два способа:\n"
+        "📇 нажмите <b>«Выбрать из контактов»</b> и выберите человека — его ID "
+        "подставится сам;\n"
+        "✏️ или пришлите <b>Telegram ID</b> числом (узнать можно у @userinfobot).\n\n"
+        "Для отмены — кнопка «Отмена» или /cancel.",
+        reply_markup=_add_admin_keyboard(),
     )
     await callback.answer()
+
+
+@router.message(AdminStates.waiting_admin_id, F.users_shared)
+async def admin_add_shared(message: Message, state: FSMContext) -> None:
+    shared = message.users_shared
+    ids = [u.user_id for u in shared.users] if shared.users else list(
+        shared.user_ids or []
+    )
+    if not ids:
+        await _finish_add_admin(
+            message, state, "⚠️ Не удалось получить пользователя — попробуйте ещё раз."
+        )
+        return
+    result = await _promote_admin(ids[0], message.from_user.id)
+    await _finish_add_admin(message, state, result)
 
 
 @router.message(AdminStates.waiting_admin_id, F.text)
 async def admin_add_id(message: Message, state: FSMContext) -> None:
     value = (message.text or "").strip()
-    admin_kb = main_menu_keyboard(True, False)
 
-    if value == "/cancel":
+    if value in ("/cancel", ADD_ADMIN_CANCEL):
         await state.clear()
-        await message.answer("Отменено.", reply_markup=admin_kb)
+        await message.answer("Отменено.", reply_markup=main_menu_keyboard(True, False))
         return
 
     if not value.isdigit():
         await message.answer(
-            "🤔 ID состоит только из цифр. Пришлите числовой Telegram ID "
-            "или отправьте /cancel."
+            "🤔 ID состоит только из цифр. Пришлите числовой Telegram ID, "
+            "выберите контакт кнопкой или отправьте /cancel."
         )
         return
 
-    new_id = int(value)
-    async with get_session() as session:
-        if await session.get(SuperAdmin, new_id) is not None:
-            await state.clear()
-            await message.answer(
-                f"ℹ️ Пользователь <code>{new_id}</code> уже суперадмин.",
-                reply_markup=admin_kb,
-            )
-            return
-        session.add(SuperAdmin(telegram_id=new_id, added_by=message.from_user.id))
-        await session.commit()
-
-    await state.clear()
-    await message.answer(
-        f"✅ Пользователь <code>{new_id}</code> добавлен в суперадмины.\n\n"
-        "Ему нужно нажать /start, чтобы увидеть админское меню.",
-        reply_markup=admin_kb,
-    )
-    text, markup = await _admins_view()
-    await message.answer(text, reply_markup=markup)
+    result = await _promote_admin(int(value), message.from_user.id)
+    await _finish_add_admin(message, state, result)
 
 
 @router.callback_query(F.data.startswith("adm:admin_del:"))
