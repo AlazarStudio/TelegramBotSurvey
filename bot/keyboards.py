@@ -26,13 +26,13 @@ def main_menu_keyboard(is_admin: bool, done: bool) -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_START), KeyboardButton(text=BTN_RESULT)],
             [
                 KeyboardButton(text=BTN_PARTICIPANTS),
-                KeyboardButton(text=BTN_WINNER),
+                KeyboardButton(text=BTN_WIPE),
             ],
             [
                 KeyboardButton(text=BTN_EXPORT),
                 KeyboardButton(text=BTN_MYTESTS),
             ],
-            [KeyboardButton(text=BTN_WIPE)],
+            [KeyboardButton(text=BTN_WINNER)],
         ]
     elif done:
         rows = [[KeyboardButton(text=BTN_RESULT)]]
