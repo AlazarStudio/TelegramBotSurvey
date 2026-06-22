@@ -5,9 +5,8 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, Message, ReplyKeyboardRemove
+from aiogram.types import BufferedInputFile, Message
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from bot.database import get_session
@@ -42,27 +41,6 @@ INTRO_TEXT = (
     "Когда будете готовы — нажмите кнопку меню ниже."
 )
 
-ASK_TICKET_TEXT = (
-    "👋 <b>Добро пожаловать!</b>\n\n"
-    "Рады видеть вас 🎉 Этот опрос определит, к какому направлению работы вы "
-    "больше склонны, а ещё сделает вас участником <b>розыгрыша</b>.\n\n"
-    "Для начала введите <b>номер вашего билетика</b> — тот номерок, который вам "
-    "выдали. Он закрепится лично за вами и будет участвовать в розыгрыше.\n\n"
-    "⚠️ Номерок вводится <b>только один раз</b> и не может повторяться у разных "
-    "участников, поэтому проверьте цифры перед отправкой.\n\n"
-    "✏️ Просто отправьте номер сообщением."
-)
-
-TICKET_TAKEN_TEXT = (
-    "⛔️ Этот номерок уже закреплён за другим участником.\n\n"
-    "Проверьте номер на своём билетике и отправьте его ещё раз."
-)
-
-TICKET_BAD_TEXT = (
-    "🤔 Номерок состоит только из цифр. "
-    "Отправьте номер с вашего билетика, например: <code>123</code>"
-)
-
 ALREADY_DONE_TEXT = (
     "✅ Вы уже проходили этот опрос.\n\n"
     "Повторное прохождение недоступно, чтобы не искажать результаты. "
@@ -71,9 +49,10 @@ ALREADY_DONE_TEXT = (
 
 FINISH_TEXT = (
     "🎉 <b>Опрос успешно пройден!</b>\n\n"
-    "Спасибо за участие 🙌 Ваш номерок уже в розыгрыше.\n\n"
-    "Теперь остаётся дождаться <b>выбора победителя</b>. Если повезёт именно "
-    "вам — бот пришлёт сообщение прямо сюда, в этот чат.\n\n"
+    "Спасибо за участие 🙌 Теперь вы участвуете в <b>розыгрыше призов</b> "
+    "среди всех прошедших опрос.\n\n"
+    "Остаётся дождаться <b>выбора победителей</b>. Если повезёт именно вам — "
+    "бот пришлёт сообщение прямо сюда, в этот чат.\n\n"
     "📩 Поэтому заглядывайте сюда и проверяйте сообщения!"
 )
 
@@ -95,8 +74,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     admin = await is_superadmin(message.from_user.id)
 
     async with get_session() as session:
-        respondent = await _get_or_create_respondent(session, message.from_user)
-        ticket = respondent.ticket
+        await _get_or_create_respondent(session, message.from_user)
         done = await session.scalar(
             select(Participation).where(
                 Participation.respondent_id == message.from_user.id
@@ -104,7 +82,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         )
         await session.commit()
 
-    # суперадмин: ticket не требуется, разделы админки — в нижнем меню (reply)
+    # суперадмин: разделы админки — в нижнем меню (reply)
     if admin:
         intro = INTRO_TEXT + (
             "\n\n🧪 <i>Вы суперадмин: можете проходить опрос много раз, "
@@ -122,49 +100,8 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         )
         return
 
-    # номерок ещё не введён — просим его, опрос начнётся только после ввода
-    if ticket is None:
-        await state.set_state(SurveyStates.waiting_ticket)
-        await message.answer(ASK_TICKET_TEXT, reply_markup=ReplyKeyboardRemove())
-        return
-
-    # номерок уже есть, но опрос не пройден — даём начать
+    # опрос ещё не пройден — даём начать
     await message.answer(INTRO_TEXT, reply_markup=main_menu_keyboard(False, False))
-
-
-@router.message(SurveyStates.waiting_ticket, F.text)
-async def handle_ticket(message: Message, state: FSMContext) -> None:
-    value = (message.text or "").strip()
-    if not value.isdigit():
-        await message.answer(TICKET_BAD_TEXT)
-        return
-
-    async with get_session() as session:
-        taken = await session.scalar(
-            select(Respondent).where(
-                Respondent.ticket == value,
-                Respondent.telegram_id != message.from_user.id,
-            )
-        )
-        if taken is not None:
-            await message.answer(TICKET_TAKEN_TEXT)
-            return
-        respondent = await session.get(Respondent, message.from_user.id)
-        if respondent.ticket is None:
-            respondent.ticket = value
-            try:
-                await session.commit()
-            except IntegrityError:
-                # гонка: тот же номерок успел занять кто-то другой
-                await session.rollback()
-                await message.answer(TICKET_TAKEN_TEXT)
-                return
-
-    await message.answer(
-        f"✅ Номерок <b>{value}</b> закреплён за вами!\n\n"
-        "Поехали — отвечайте честно 🙂"
-    )
-    await _begin_survey(message, state)
 
 
 async def _begin_survey(message: Message, state: FSMContext) -> None:
@@ -192,7 +129,6 @@ async def start_survey(message: Message, state: FSMContext) -> None:
     admin = await is_superadmin(message.from_user.id)
     if not admin:
         async with get_session() as session:
-            respondent = await session.get(Respondent, message.from_user.id)
             done = await session.scalar(
                 select(Participation).where(
                     Participation.respondent_id == message.from_user.id
@@ -202,11 +138,6 @@ async def start_survey(message: Message, state: FSMContext) -> None:
             await message.answer(
                 ALREADY_DONE_TEXT, reply_markup=main_menu_keyboard(False, True)
             )
-            return
-        # без номерка опрос не начинаем — отправляем на его ввод
-        if respondent is None or respondent.ticket is None:
-            await state.set_state(SurveyStates.waiting_ticket)
-            await message.answer(ASK_TICKET_TEXT, reply_markup=ReplyKeyboardRemove())
             return
 
     await _begin_survey(message, state)

@@ -26,24 +26,11 @@ def _migrate(connection) -> None:
 
     1) добавляет колонку is_test в participations, если её нет;
     2) снимает старое ограничение UNIQUE(respondent_id), чтобы суперадмины
-       могли проходить опрос несколько раз;
-    3) добавляет колонку ticket (номерок) в respondents с уникальным индексом.
+       могли проходить опрос несколько раз.
+
+    Остаточная колонка ticket в старых БД безвредна (NULL у всех) и не трогается.
     """
     insp = inspect(connection)
-
-    resp_cols = {c["name"] for c in insp.get_columns("respondents")}
-    if "ticket" not in resp_cols:
-        # SQLite не умеет ADD COLUMN ... UNIQUE — уникальность задаём индексом.
-        # NULL-значения в уникальном индексе SQLite не конфликтуют между собой.
-        connection.execute(
-            text("ALTER TABLE respondents ADD COLUMN ticket VARCHAR(64)")
-        )
-        connection.execute(
-            text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS ix_respondents_ticket "
-                "ON respondents(ticket)"
-            )
-        )
 
     columns = {c["name"] for c in insp.get_columns("participations")}
     if "is_test" not in columns:

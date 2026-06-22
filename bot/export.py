@@ -42,7 +42,6 @@ async def build_results_xlsx() -> BytesIO:
     dir_names = [d.name for d in directions]
     headers = [
         "Дата",
-        "Номерок",
         "Имя",
         "Фамилия",
         "Username",
@@ -63,7 +62,6 @@ async def build_results_xlsx() -> BytesIO:
         top = p.top_direction.name if p.top_direction else "—"
         row = [
             p.completed_at.strftime("%d.%m.%Y %H:%M") if p.completed_at else "",
-            r.ticket or "",
             r.first_name or "",
             r.last_name or "",
             f"@{r.username}" if r.username else "",

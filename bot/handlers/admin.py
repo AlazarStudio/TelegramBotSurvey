@@ -9,7 +9,7 @@
 import json
 import random
 
-from aiogram import Bot, F, Router
+from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import BaseFilter, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -180,7 +180,6 @@ async def participant_detail(callback: CallbackQuery) -> None:
     top = p.top_direction.name if p.top_direction else "—"
     lines = [
         f"👤 <b>{name}</b>",
-        f"🎟️ Номерок: <b>{r.ticket or '—'}</b>",
         f"Username: {uname}",
         f"Telegram ID: <code>{r.telegram_id}</code>",
         f"Дата: {p.completed_at:%d.%m.%Y %H:%M}",
@@ -207,88 +206,109 @@ async def export_entry(message: Message) -> None:
     )
 
 
-# ----------------------------- выбор победителя -----------------------------
+# ----------------------------- выбор победителей -----------------------------
 
-def _winner_card(r: Respondent, top: str) -> str:
-    name = " ".join(filter(None, [r.first_name, r.last_name])) or "—"
-    uname = f"@{r.username}" if r.username else "—"
-    return (
-        "🎲 <b>Победитель розыгрыша</b>\n\n"
-        f"🏆 <b>{name}</b>\n"
-        f"🎟️ Номерок: <b>{r.ticket or '—'}</b>\n"
-        f"Username: {uname}\n"
-        f"Telegram ID: <code>{r.telegram_id}</code>\n"
-        f"Ведущее направление: <b>{top}</b>"
-    )
-
-
-async def _winner_view(bot: Bot) -> tuple[str, InlineKeyboardMarkup]:
-    async with get_session() as session:
-        rows = list(
-            await session.scalars(
-                select(Participation)
-                .where(Participation.is_test.is_(False))
-                .options(
-                    selectinload(Participation.respondent),
-                    selectinload(Participation.top_direction),
-                )
+async def _real_candidates(session) -> list[Participation]:
+    """Реальные участники (без тестовых), по одному прохождению на человека."""
+    rows = list(
+        await session.scalars(
+            select(Participation)
+            .where(Participation.is_test.is_(False))
+            .options(
+                selectinload(Participation.respondent),
+                selectinload(Participation.top_direction),
             )
         )
-
-    # один участник = одно реальное прохождение, но на всякий случай дедуплицируем
+    )
     by_id = {p.respondent_id: p for p in rows if p.respondent is not None}
-    candidates = list(by_id.values())
-
-    if not candidates:
-        return (
-            "🎲 <b>Выбор победителя</b>\n\nПока никто не прошёл опрос — "
-            "выбирать не из кого.",
-            InlineKeyboardBuilder().as_markup(),
-        )
-
-    winner = random.choice(candidates)
-    r = winner.respondent
-    top = winner.top_direction.name if winner.top_direction else "—"
-
-    # сразу пишем победителю автоматически, без отдельного подтверждения
-    try:
-        await bot.send_message(
-            r.telegram_id,
-            "🎉 <b>Поздравляем!</b>\n\n"
-            "Вы стали победителем розыгрыша среди участников опроса. "
-            "Организатор скоро свяжется с вами. 🥳",
-        )
-        sent = True
-    except TelegramBadRequest:
-        sent = False
-
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🎲 Выбрать заново", callback_data="adm:winner")
-    notice = (
-        "✅ Сообщение победителю отправлено."
-        if sent
-        else "⚠️ Не удалось написать победителю — возможно, он не запускал "
-        "бота или заблокировал его. Свяжитесь с ним другим способом."
-    )
-    text = (
-        _winner_card(r, top)
-        + f"\n\n<i>Всего участников: {len(candidates)}.</i>\n\n"
-        + notice
-    )
-    return text, kb.as_markup()
+    return list(by_id.values())
 
 
 @router.message(StateFilter(None), F.text == BTN_WINNER)
-async def winner_entry(message: Message) -> None:
-    text, markup = await _winner_view(message.bot)
-    await message.answer(text, reply_markup=markup)
+async def winner_entry(message: Message, state: FSMContext) -> None:
+    async with get_session() as session:
+        candidates = await _real_candidates(session)
+
+    if not candidates:
+        await message.answer(
+            "🎲 <b>Выбор победителей</b>\n\nПока никто не прошёл опрос — "
+            "выбирать не из кого."
+        )
+        return
+
+    await state.set_state(AdminStates.waiting_winner_count)
+    await message.answer(
+        "🎲 <b>Розыгрыш призов</b>\n\n"
+        f"Сейчас участников: <b>{len(candidates)}</b>.\n\n"
+        "Сколько <b>победителей</b> выбрать? Пришлите число.\n"
+        "Для отмены отправьте /cancel.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
 
 
-@router.callback_query(F.data == "adm:winner")
-async def winner_repick(callback: CallbackQuery) -> None:
-    text, markup = await _winner_view(callback.bot)
-    await safe_edit(callback, text, markup)
-    await callback.answer("🎉 Победитель выбран!")
+@router.message(AdminStates.waiting_winner_count, F.text)
+async def winner_count(message: Message, state: FSMContext) -> None:
+    value = (message.text or "").strip()
+    admin_kb = main_menu_keyboard(True, False)
+
+    if value == "/cancel":
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=admin_kb)
+        return
+
+    if not value.isdigit() or int(value) < 1:
+        await message.answer(
+            "🤔 Нужно положительное число победителей. "
+            "Пришлите его или отправьте /cancel."
+        )
+        return
+
+    count = int(value)
+    await state.clear()
+
+    async with get_session() as session:
+        candidates = await _real_candidates(session)
+
+    if not candidates:
+        await message.answer(
+            "Пока никто не прошёл опрос — выбирать не из кого.",
+            reply_markup=admin_kb,
+        )
+        return
+
+    winners = random.sample(candidates, min(count, len(candidates)))
+
+    lines = [f"🎉 <b>Победители розыгрыша</b> (всего: {len(winners)}):\n"]
+    for i, p in enumerate(winners, 1):
+        r = p.respondent
+        name = " ".join(filter(None, [r.first_name, r.last_name])) or "—"
+        uname = f"@{r.username}" if r.username else "—"
+        try:
+            await message.bot.send_message(
+                r.telegram_id,
+                "🎉 <b>Поздравляем!</b>\n\n"
+                "Вы выиграли в <b>розыгрыше призов</b> среди участников опроса. "
+                "Организатор скоро свяжется с вами. 🥳",
+            )
+            status = "✅"
+        except TelegramBadRequest:
+            status = "⚠️"
+        lines.append(
+            f"{i}. {status} <b>{name}</b> ({uname}) — "
+            f"<code>{r.telegram_id}</code>"
+        )
+
+    if count > len(candidates):
+        lines.append(
+            f"\n<i>Запрошено {count}, но участников всего {len(candidates)} — "
+            "выбраны все.</i>"
+        )
+    lines.append(
+        "\n✅ — сообщение доставлено, "
+        "⚠️ — не удалось написать (не запускал бота или заблокировал)."
+    )
+
+    await message.answer("\n".join(lines), reply_markup=admin_kb)
 
 
 # ----------------------------- мои тестовые прохождения -----------------------------
@@ -571,8 +591,8 @@ async def wipe_prompt(message: Message, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_wipe_password)
     await message.answer(
         "🗑 <b>Удаление результатов опроса</b>\n\n"
-        "Будут <b>безвозвратно</b> удалены все результаты, ответы и участники "
-        "(их номерки освободятся). Сам опрос — вопросы и направления — останется.\n\n"
+        "Будут <b>безвозвратно</b> удалены все результаты, ответы и участники. "
+        "Сам опрос — вопросы и направления — останется.\n\n"
         "Чтобы подтвердить — введите <b>пароль</b>.\n"
         "Для отмены отправьте /cancel.",
         reply_markup=ReplyKeyboardRemove(),
@@ -604,7 +624,7 @@ async def wipe_confirm(message: Message, state: FSMContext) -> None:
         await session.commit()
 
     await message.answer(
-        "✅ Результаты опроса удалены: участники и ответы стёрты, "
-        "номерки освобождены. Сам опрос остался на месте.",
+        "✅ Результаты опроса удалены: участники и ответы стёрты. "
+        "Сам опрос остался на месте.",
         reply_markup=admin_kb,
     )

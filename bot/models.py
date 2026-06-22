@@ -93,10 +93,6 @@ class Respondent(Base):
     username: Mapped[str] = mapped_column(String(255), default="")
     first_name: Mapped[str] = mapped_column(String(255), default="")
     last_name: Mapped[str] = mapped_column(String(255), default="")
-    # выданный участнику номерок: уникальный, вводится один раз перед опросом
-    ticket: Mapped[str | None] = mapped_column(
-        String(64), unique=True, nullable=True
-    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
